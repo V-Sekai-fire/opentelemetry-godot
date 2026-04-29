@@ -31,6 +31,7 @@
 #include "otel_resource.h"
 
 #include "../otel_document.h"
+
 #include "core/object/class_db.h"
 
 void OTelResource::_bind_methods() {

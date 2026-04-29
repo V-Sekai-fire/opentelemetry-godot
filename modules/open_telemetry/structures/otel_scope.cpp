@@ -31,6 +31,7 @@
 #include "otel_scope.h"
 
 #include "../otel_document.h"
+
 #include "core/object/class_db.h"
 
 void OTelScope::_bind_methods() {

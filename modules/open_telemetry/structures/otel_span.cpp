@@ -31,6 +31,7 @@
 #include "otel_span.h"
 
 #include "../otel_document.h"
+
 #include "core/crypto/crypto.h"
 #include "core/object/class_db.h"
 #include "core/os/time.h"

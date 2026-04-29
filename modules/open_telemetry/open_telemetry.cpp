@@ -169,7 +169,6 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 		}
 	}
 
-
 	// Update state resource
 	if (!p_attributes.is_empty()) {
 		Array keys = p_attributes.keys();
@@ -767,7 +766,6 @@ void OpenTelemetry::record_crash(String p_message, Dictionary p_attributes) {
 
 	_wal.write("traces", generate_uuid_v7(), json);
 }
-
 
 String OpenTelemetry::shutdown() {
 	FlushAllBufferedData();

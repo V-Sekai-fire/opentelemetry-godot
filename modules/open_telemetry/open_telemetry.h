@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/crypto/crypto.h"
+#include "core/error/error_macros.h"
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/object/class_db.h"
@@ -157,6 +158,8 @@ public:
 	void record_metric(String p_name, float p_value, String p_unit, int p_metric_type, Dictionary p_attributes);
 	void log_message(String p_level, String p_message, Dictionary p_attributes);
 	void flush_all();
+	void drain_wal();
+	void record_crash(String p_message, Dictionary p_attributes = Dictionary());
 	String shutdown();
 
 	// Metrics API
@@ -193,6 +196,12 @@ private:
 	void CheckAndFlush();
 	void FlushAllBufferedData();
 	void _flush_wal_signal(const String &p_signal, const String &p_endpoint);
+
+	// Godot error handler — fires on ERR_PRINT / CRASH_NOW / script errors.
+	ErrorHandlerList _err_handler;
+	static void _error_handler(void *p_self, const char *p_func, const char *p_file,
+			int p_line, const char *p_error, const char *p_errorexp,
+			bool p_editor_notify, ErrorHandlerType p_type);
 };
 
 VARIANT_ENUM_CAST(StatusCode);

@@ -143,6 +143,7 @@ void OpenTelemetry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_state"), &OpenTelemetry::get_state);
 	ClassDB::bind_method(D_METHOD("get_document"), &OpenTelemetry::get_document);
 
+	BIND_ENUM_CONSTANT(SPAN_KIND_UNSPECIFIED);
 	BIND_ENUM_CONSTANT(SPAN_KIND_INTERNAL);
 	BIND_ENUM_CONSTANT(SPAN_KIND_SERVER);
 	BIND_ENUM_CONSTANT(SPAN_KIND_CLIENT);

@@ -1,13 +1,16 @@
 #pragma once
 
+#include "core/object/ref_counted.h"
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
 
-// JSONL write-ahead log for OpenTelemetry telemetry.
-// Each line: {"id":"<uuid>","signal":"<signal>","payload":"<escaped json>","ts":<unix>}
-// Rows are deleted only after a successful HTTP export.
+class SQLite;
+
+// SQLite WAL for OpenTelemetry telemetry.
+// Rows persisted before HTTP export; deleted only after HTTP 200.
+// journal_mode=WAL ensures append writes survive process crashes.
 class OTelWAL {
-	String _path;
+	Ref<SQLite> _db;
 	bool _open = false;
 
 public:

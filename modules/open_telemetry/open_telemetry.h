@@ -196,9 +196,8 @@ private:
 	void FlushAllBufferedData();
 	void _flush_wal_signal(const String &p_signal, const String &p_endpoint);
 
-	// Cooldown: suppress duplicate crash events within 1 s to avoid collector spam.
-	uint64_t _last_crash_time_ms = 0;
-	String _last_crash_message;
+	// One crash per session — Crashlytics model.
+	bool _crash_recorded = false;
 };
 
 VARIANT_ENUM_CAST(StatusCode);

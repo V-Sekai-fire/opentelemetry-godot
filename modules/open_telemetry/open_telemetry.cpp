@@ -37,7 +37,6 @@
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "core/os/time.h"
 
 // OpenTelemetryTracer implementation
 
@@ -722,14 +721,12 @@ void OpenTelemetry::record_crash(String p_message, Dictionary p_attributes) {
 	if (!_wal.is_open()) {
 		return;
 	}
-	// Suppress duplicate crashes within 1 second to avoid collector spam
-	// when Godot's error system fires repeatedly for the same fault.
-	uint64_t now_ms = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000.0);
-	if (p_message == _last_crash_message && now_ms - _last_crash_time_ms < 1000) {
+	// One crash per session — Crashlytics model.
+	// NOTIFICATION_CRASH fires once; this guards against erroneous GDScript loops.
+	if (_crash_recorded) {
 		return;
 	}
-	_last_crash_message = p_message;
-	_last_crash_time_ms = now_ms;
+	_crash_recorded = true;
 	// Build a minimal error span and write ONLY to WAL — no HTTP.
 	// The process may be dying; SQLite WAL write is the only safe operation.
 	Ref<OTelSpan> span;

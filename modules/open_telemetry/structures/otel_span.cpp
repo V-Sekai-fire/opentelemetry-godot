@@ -287,7 +287,8 @@ void OTelSpan::set_events(const TypedArray<Dictionary> &p_events) {
 void OTelSpan::add_event(const String &p_name, const Dictionary &p_attributes, uint64_t p_timestamp) {
 	Dictionary event;
 	event["name"] = p_name;
-	event["timeUnixNano"] = p_timestamp == 0 ? (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL) : p_timestamp;
+	uint64_t ts = p_timestamp == 0 ? (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL) : p_timestamp;
+	event["timeUnixNano"] = itos((int64_t)ts);
 	if (p_attributes.size() > 0) {
 		event["attributes"] = p_attributes;
 	}
@@ -384,7 +385,15 @@ Dictionary OTelSpan::to_otlp_dict() const {
 	}
 
 	if (links.size() > 0) {
-		span_dict["links"] = links;
+		Array fixed_links;
+		for (int i = 0; i < links.size(); i++) {
+			Dictionary lk = links[i];
+			if (lk.has("attributes") && lk["attributes"].get_type() == Variant::DICTIONARY) {
+				lk["attributes"] = OTelDocument::attributes_to_otlp(lk["attributes"]);
+			}
+			fixed_links.push_back(lk);
+		}
+		span_dict["links"] = fixed_links;
 	}
 
 	if (status_code != STATUS_CODE_UNSET) {

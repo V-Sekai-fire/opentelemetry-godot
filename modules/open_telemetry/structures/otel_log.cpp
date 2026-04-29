@@ -31,6 +31,7 @@
 #include "otel_log.h"
 
 #include "../otel_document.h"
+
 #include "core/object/class_db.h"
 #include "core/os/time.h"
 
@@ -163,10 +164,10 @@ void OTelLog::set_span_id(const String &p_span_id) {
 Dictionary OTelLog::to_otlp_dict() const {
 	Dictionary log_dict;
 
-	log_dict["timeUnixNano"] = (int64_t)time_unix_nano;
+	log_dict["timeUnixNano"] = itos((int64_t)time_unix_nano);
 
 	if (observed_time_unix_nano > 0) {
-		log_dict["observedTimeUnixNano"] = (int64_t)observed_time_unix_nano;
+		log_dict["observedTimeUnixNano"] = itos((int64_t)observed_time_unix_nano);
 	}
 
 	if (severity_number != SEVERITY_NUMBER_UNSPECIFIED) {

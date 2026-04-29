@@ -69,7 +69,7 @@ Dictionary OTelDocument::attribute_to_otlp(const String &p_key, const Variant &p
 			value_dict["stringValue"] = String(p_value);
 			break;
 		case Variant::INT:
-			value_dict["intValue"] = (int64_t)p_value;
+			value_dict["intValue"] = itos((int64_t)p_value);
 			break;
 		case Variant::FLOAT:
 			value_dict["doubleValue"] = (double)p_value;

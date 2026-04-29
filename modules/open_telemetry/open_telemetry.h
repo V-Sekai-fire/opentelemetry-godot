@@ -31,7 +31,6 @@
 #pragma once
 
 #include "core/crypto/crypto.h"
-#include "core/error/error_macros.h"
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/object/class_db.h"
@@ -197,11 +196,9 @@ private:
 	void FlushAllBufferedData();
 	void _flush_wal_signal(const String &p_signal, const String &p_endpoint);
 
-	// Godot error handler — fires on ERR_PRINT / CRASH_NOW / script errors.
-	ErrorHandlerList _err_handler;
-	static void _error_handler(void *p_self, const char *p_func, const char *p_file,
-			int p_line, const char *p_error, const char *p_errorexp,
-			bool p_editor_notify, ErrorHandlerType p_type);
+	// Cooldown: suppress duplicate crash events within 1 s to avoid collector spam.
+	uint64_t _last_crash_time_ms = 0;
+	String _last_crash_message;
 };
 
 VARIANT_ENUM_CAST(StatusCode);

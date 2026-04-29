@@ -35,7 +35,6 @@
 #include "structures/otel_resource.h"
 #include "structures/otel_scope.h"
 
-#include "core/error/error_macros.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
@@ -169,11 +168,6 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 			_flush_wal_signal("metrics", "/v1/metrics");
 			_flush_wal_signal("logs", "/v1/logs");
 		}
-
-		// Hook Godot's error handler so crashes are captured automatically.
-		_err_handler.errfunc = _error_handler;
-		_err_handler.userdata = this;
-		add_error_handler(&_err_handler);
 	}
 
 
@@ -728,6 +722,14 @@ void OpenTelemetry::record_crash(String p_message, Dictionary p_attributes) {
 	if (!_wal.is_open()) {
 		return;
 	}
+	// Suppress duplicate crashes within 1 second to avoid collector spam
+	// when Godot's error system fires repeatedly for the same fault.
+	uint64_t now_ms = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000.0);
+	if (p_message == _last_crash_message && now_ms - _last_crash_time_ms < 1000) {
+		return;
+	}
+	_last_crash_message = p_message;
+	_last_crash_time_ms = now_ms;
 	// Build a minimal error span and write ONLY to WAL — no HTTP.
 	// The process may be dying; SQLite WAL write is the only safe operation.
 	Ref<OTelSpan> span;
@@ -754,36 +756,8 @@ void OpenTelemetry::record_crash(String p_message, Dictionary p_attributes) {
 	_wal.write("traces", generate_uuid_v7(), json);
 }
 
-// Static callback — called by Godot's error subsystem on ERR_PRINT / crash.
-void OpenTelemetry::_error_handler(void *p_self, const char *p_func,
-		const char *p_file, int p_line, const char *p_error,
-		const char *p_errorexp, bool p_editor_notify, ErrorHandlerType p_type) {
-	if (p_type != ERR_HANDLER_ERROR && p_type != ERR_HANDLER_SCRIPT) {
-		return;
-	}
-	OpenTelemetry *self = static_cast<OpenTelemetry *>(p_self);
-	if (!self->_wal.is_open()) {
-		return;
-	}
-
-	Dictionary attrs;
-	attrs["exception.message"] = String(p_error);
-	attrs["exception.type"] = (p_type == ERR_HANDLER_SCRIPT) ? "script_error" : "engine_error";
-	attrs["code.function"] = String(p_func);
-	attrs["code.filepath"] = String(p_file);
-	attrs["code.lineno"] = p_line;
-	if (p_errorexp && p_errorexp[0]) {
-		attrs["exception.stacktrace"] = String(p_errorexp);
-	}
-
-	self->record_crash(String(p_error), attrs);
-}
 
 String OpenTelemetry::shutdown() {
-	if (_err_handler.errfunc) {
-		remove_error_handler(&_err_handler);
-		_err_handler.errfunc = nullptr;
-	}
 	FlushAllBufferedData();
 	active_spans.clear();
 	state->clear_all();

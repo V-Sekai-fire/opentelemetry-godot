@@ -135,17 +135,12 @@ bool OTelSpan::is_valid_hex_string(const String &p_str, int p_expected_length) {
 }
 
 String OTelSpan::generate_random_hex(int p_length) {
-	// Generate cryptographically secure random hex string
+	// hex_encode_buffer produces exactly 2*byte_count lowercase hex chars.
+	// Formally justified by HexEncodeLength.lean: hexEncodeLength theorem.
 	Ref<Crypto> crypto = Crypto::create();
 	int byte_count = (p_length + 1) / 2;
-	PackedByteArray random_bytes = crypto->generate_random_bytes(byte_count);
-
-	String hex_str;
-	for (int i = 0; i < random_bytes.size(); i++) {
-		hex_str += String::num_int64(random_bytes[i], 16).pad_zeros(2);
-	}
-
-	return hex_str.substr(0, p_length).to_lower();
+	PackedByteArray bytes = crypto->generate_random_bytes(byte_count);
+	return String::hex_encode_buffer(bytes.ptr(), bytes.size()).substr(0, p_length);
 }
 
 // Validation methods (public)
@@ -169,48 +164,31 @@ bool OTelSpan::is_valid_span_id(const String &p_id) {
 
 // ID generation helpers
 String OTelSpan::generate_trace_id() {
-	// Generate UUIDv7 as 32 hex characters (128 bits)
-	// UUIDv7 format: unix_ts_ms(48) + ver(4) + rand_a(12) + var(2) + rand_b(62)
+	// UUIDv7: 128 bits = 16 bytes → hex_encode() → exactly 32 hex chars.
+	// Formally: hexEncodeLength proves |hex_encode(b)| = 2*|b| for all b.
+	// See modules/open_telemetry/lean/HexEncodeLength.lean.
 
 	Ref<Crypto> crypto = Crypto::create();
+	PackedByteArray bytes = crypto->generate_random_bytes(16);
+	uint8_t *w = bytes.ptrw();
 
-	// Get current timestamp in milliseconds
-	uint64_t timestamp_ms = Time::get_singleton()->get_unix_time_from_system() * 1000;
+	// Bytes 0-5: 48-bit millisecond timestamp (UUIDv7 unix_ts_ms field).
+	uint64_t ts = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000.0);
+	w[0] = (ts >> 40) & 0xFF;
+	w[1] = (ts >> 32) & 0xFF;
+	w[2] = (ts >> 24) & 0xFF;
+	w[3] = (ts >> 16) & 0xFF;
+	w[4] = (ts >> 8) & 0xFF;
+	w[5] = ts & 0xFF;
 
-	// Generate 10 bytes of cryptographically secure random data
-	PackedByteArray random_bytes = crypto->generate_random_bytes(10);
+	// Byte 6 upper nibble: version = 7.
+	w[6] = (w[6] & 0x0F) | 0x70;
 
-	// Build UUIDv7 structure (128 bits / 32 hex chars)
-	// Bits 0-47: timestamp_ms
-	uint64_t time_hi = (timestamp_ms >> 16) & 0xFFFFFFFF; // Upper 32 bits
-	uint64_t time_lo = (timestamp_ms & 0xFFFF); // Lower 16 bits
+	// Byte 8 upper 2 bits: variant = 10.
+	w[8] = (w[8] & 0x3F) | 0x80;
 
-	// Bits 48-63: version (0111 = 7) + 12 random bits
-	uint16_t rand_12bits = ((uint16_t)random_bytes[0] << 4) | ((random_bytes[1] >> 4) & 0xF);
-	uint64_t ver_rand = (0x7ULL << 12) | rand_12bits;
-
-	// Bits 64-127: variant (10) + 62 random bits
-	uint64_t rand_62bits = ((uint64_t)(random_bytes[1] & 0xF) << 58) |
-			((uint64_t)random_bytes[2] << 50) |
-			((uint64_t)random_bytes[3] << 42) |
-			((uint64_t)random_bytes[4] << 34) |
-			((uint64_t)random_bytes[5] << 26) |
-			((uint64_t)random_bytes[6] << 18) |
-			((uint64_t)random_bytes[7] << 10) |
-			((uint64_t)random_bytes[8] << 2) |
-			((random_bytes[9] >> 6) & 0x3);
-
-	uint64_t var_hi = (0x2ULL << 30) | ((rand_62bits >> 32) & 0x3FFFFFFF);
-	uint64_t var_lo = rand_62bits & 0xFFFFFFFF;
-
-	// Convert to 32-character hex string
-	String uuid;
-	uuid += String::num_int64(time_hi, 16).pad_zeros(8);
-	uuid += String::num_int64((time_lo << 16) | ver_rand, 16).pad_zeros(8);
-	uuid += String::num_int64(var_hi, 16).pad_zeros(8);
-	uuid += String::num_int64(var_lo, 16).pad_zeros(8);
-
-	return uuid.to_lower();
+	// hex_encode_buffer(16 bytes) = 32 lowercase hex chars, always.
+	return String::hex_encode_buffer(bytes.ptr(), bytes.size());
 }
 
 String OTelSpan::generate_span_id() {

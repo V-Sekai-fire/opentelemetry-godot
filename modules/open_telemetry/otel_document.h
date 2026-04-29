@@ -68,4 +68,6 @@ public:
 	static Dictionary attribute_to_otlp(const String &p_key, const Variant &p_value);
 	static Array attributes_to_otlp(const Dictionary &p_attributes);
 	static Dictionary attributes_from_otlp(const Array &p_otlp_attributes);
+	// Convert any Godot Variant to an OTLP AnyValue dictionary.
+	static Dictionary variant_to_any_value(const Variant &p_value);
 };

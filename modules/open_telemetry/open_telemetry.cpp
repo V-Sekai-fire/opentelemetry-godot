@@ -708,6 +708,7 @@ String OpenTelemetry::shutdown() {
 	FlushAllBufferedData();
 	active_spans.clear();
 	state->clear_all();
+	_wal.close();
 	return "OK";
 }
 

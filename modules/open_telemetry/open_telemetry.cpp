@@ -264,12 +264,27 @@ String OpenTelemetry::start_span(String p_name, SpanKind p_kind, Array p_links, 
 	if (trace_id.is_empty()) {
 		trace_id = generate_trace_id();
 	}
-
-	return start_span_with_id(p_name, generate_span_id());
+	String uuid = start_span_with_id(p_name, generate_span_id());
+	if (active_spans.has(uuid)) {
+		Ref<OTelSpan> span = active_spans[uuid];
+		span->set_kind((OTelSpan::SpanKind)p_kind);
+		if (!p_attributes.is_empty()) {
+			span->set_attributes(p_attributes);
+		}
+	}
+	return uuid;
 }
 
 String OpenTelemetry::start_span_with_parent(String p_name, String p_parent_span_uuid, SpanKind p_kind, Array p_links, Dictionary p_attributes) {
-	return start_span_with_parent_id(p_name, p_parent_span_uuid, generate_span_id());
+	String uuid = start_span_with_parent_id(p_name, p_parent_span_uuid, generate_span_id());
+	if (active_spans.has(uuid)) {
+		Ref<OTelSpan> span = active_spans[uuid];
+		span->set_kind((OTelSpan::SpanKind)p_kind);
+		if (!p_attributes.is_empty()) {
+			span->set_attributes(p_attributes);
+		}
+	}
+	return uuid;
 }
 
 String OpenTelemetry::start_span_with_id(String p_name, String p_span_id) {

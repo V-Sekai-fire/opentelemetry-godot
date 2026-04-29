@@ -30,6 +30,7 @@
 
 #include "otel_log.h"
 
+#include "../otel_document.h"
 #include "core/object/class_db.h"
 #include "core/os/time.h"
 
@@ -183,7 +184,7 @@ Dictionary OTelLog::to_otlp_dict() const {
 	}
 
 	if (attributes.size() > 0) {
-		log_dict["attributes"] = attributes;
+		log_dict["attributes"] = OTelDocument::attributes_to_otlp(attributes);
 	}
 
 	if (!trace_id.is_empty()) {

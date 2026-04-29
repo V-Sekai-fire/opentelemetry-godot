@@ -423,8 +423,11 @@ void OpenTelemetry::record_metric(String p_name, float p_value, String p_unit, i
 	metric->set_type((OTelMetric::MetricType)p_metric_type);
 
 	// Create data point — OTLP field names and types per spec.
+	// startTimeUnixNano is "optional but encouraged" for rate calculation.
+	String ts = itos((int64_t)(Time::get_singleton()->get_unix_time_from_system() * 1e9));
 	Dictionary data_point;
-	data_point["timeUnixNano"] = itos((int64_t)(Time::get_singleton()->get_unix_time_from_system() * 1e9));
+	data_point["startTimeUnixNano"] = ts;
+	data_point["timeUnixNano"] = ts;
 	data_point["asDouble"] = (double)p_value;
 	if (!p_attributes.is_empty()) {
 		data_point["attributes"] = OTelDocument::attributes_to_otlp(p_attributes);
@@ -444,7 +447,10 @@ void OpenTelemetry::log_message(String p_level, String p_message, Dictionary p_a
 	if (!p_attributes.is_empty()) {
 		log->set_attributes(p_attributes);
 	}
-	log->set_time_unix_nano(Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL);
+	uint64_t now_ns = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000000000.0);
+	log->set_time_unix_nano(now_ns);
+	// Spec §LogRecord: observedTimeUnixNano MUST be set once observed.
+	log->set_observed_time_unix_nano(now_ns);
 
 	// Map log level string to severity
 	if (p_level == "TRACE") {

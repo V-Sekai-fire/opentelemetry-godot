@@ -155,7 +155,7 @@ public:
 	void set_flush_interval(int p_interval_ms);
 	void set_batch_size(int p_size);
 	void record_metric(String p_name, float p_value, String p_unit, int p_metric_type, Dictionary p_attributes);
-	void log_message(String p_level, String p_message, Dictionary p_attributes);
+	void log_message(String p_level, Variant p_body, Dictionary p_attributes);
 	void flush_all();
 	void drain_wal();
 	void record_crash(String p_message, Dictionary p_attributes = Dictionary());

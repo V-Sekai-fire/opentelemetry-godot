@@ -439,11 +439,11 @@ void OpenTelemetry::record_metric(String p_name, float p_value, String p_unit, i
 	CheckAndFlush();
 }
 
-void OpenTelemetry::log_message(String p_level, String p_message, Dictionary p_attributes) {
+void OpenTelemetry::log_message(String p_level, Variant p_body, Dictionary p_attributes) {
 	Ref<OTelLog> log;
 	log.instantiate();
 
-	log->set_body(p_message);
+	log->set_body(p_body);
 	if (!p_attributes.is_empty()) {
 		log->set_attributes(p_attributes);
 	}

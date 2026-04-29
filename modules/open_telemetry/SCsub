@@ -6,8 +6,8 @@ Import("env_modules")
 
 env_otel = env_modules.Clone()
 
-# Add SQLite include path
-env_otel.Prepend(CPPPATH=["#modules/open_telemetry/thirdparty/sqlite"])
+# Include paths for GodotSQLite and its spmemvfs dependency
+env_otel.Prepend(CPPPATH=["#modules/sqlite/thirdparty", "#modules/sqlite/src"])
 
 module_obj = []
 

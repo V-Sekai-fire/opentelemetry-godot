@@ -44,6 +44,7 @@
 // New structure classes
 #include "otel_document.h"
 #include "otel_state.h"
+#include "otel_wal.h"
 #include "structures/otel_span.h"
 
 // Deprecated enums - kept for backward compatibility, map to OTelSpan enums
@@ -126,6 +127,9 @@ private:
 	// Multi-sink support
 	Dictionary sinks;
 
+	// JSONL WAL — persists telemetry before HTTP export; retried on next flush
+	OTelWAL _wal;
+
 	// HTTP client for OTLP export
 	Ref<HTTPClient> http_client;
 
@@ -188,6 +192,7 @@ private:
 
 	void CheckAndFlush();
 	void FlushAllBufferedData();
+	void _flush_wal_signal(const String &p_signal, const String &p_endpoint);
 };
 
 VARIANT_ENUM_CAST(StatusCode);

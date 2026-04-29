@@ -30,6 +30,7 @@
 
 #include "otel_span.h"
 
+#include "../otel_document.h"
 #include "core/crypto/crypto.h"
 #include "core/object/class_db.h"
 #include "core/os/time.h"
@@ -360,15 +361,25 @@ Dictionary OTelSpan::to_otlp_dict() const {
 
 	span_dict["name"] = name;
 	span_dict["kind"] = (int)kind;
-	span_dict["startTimeUnixNano"] = (int64_t)start_time_unix_nano;
-	span_dict["endTimeUnixNano"] = (int64_t)end_time_unix_nano;
+	// OTLP requires nanosecond timestamps as decimal strings (exceeds JS safe integer).
+	span_dict["startTimeUnixNano"] = itos((int64_t)start_time_unix_nano);
+	span_dict["endTimeUnixNano"] = itos((int64_t)end_time_unix_nano);
 
 	if (attributes.size() > 0) {
-		span_dict["attributes"] = attributes;
+		span_dict["attributes"] = OTelDocument::attributes_to_otlp(attributes);
 	}
 
 	if (events.size() > 0) {
-		span_dict["events"] = events;
+		// Convert each event's raw attributes dict to OTLP array format.
+		Array fixed_events;
+		for (int i = 0; i < events.size(); i++) {
+			Dictionary ev = events[i];
+			if (ev.has("attributes") && ev["attributes"].get_type() == Variant::DICTIONARY) {
+				ev["attributes"] = OTelDocument::attributes_to_otlp(ev["attributes"]);
+			}
+			fixed_events.push_back(ev);
+		}
+		span_dict["events"] = fixed_events;
 	}
 
 	if (links.size() > 0) {

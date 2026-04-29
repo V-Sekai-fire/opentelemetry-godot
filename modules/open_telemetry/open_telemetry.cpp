@@ -157,6 +157,12 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 	hostname = p_host;
 	resource_attributes = p_attributes;
 
+	if (p_host != "console" && !p_host.is_empty()) {
+		String wal_path = OS::get_singleton()->get_user_data_dir().path_join("otel_wal_" + p_name + ".jsonl");
+		_wal.open(wal_path);
+	}
+
+
 	// Update state resource
 	if (!p_attributes.is_empty()) {
 		Array keys = p_attributes.keys();
@@ -394,12 +400,12 @@ void OpenTelemetry::record_metric(String p_name, float p_value, String p_unit, i
 	}
 	metric->set_type((OTelMetric::MetricType)p_metric_type);
 
-	// Create data point
+	// Create data point — OTLP field names and types per spec.
 	Dictionary data_point;
-	data_point["time_unix_nano"] = Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL;
-	data_point["value"] = p_value;
+	data_point["timeUnixNano"] = itos((int64_t)(Time::get_singleton()->get_unix_time_from_system() * 1e9));
+	data_point["asDouble"] = (double)p_value;
 	if (!p_attributes.is_empty()) {
-		data_point["attributes"] = p_attributes;
+		data_point["attributes"] = OTelDocument::attributes_to_otlp(p_attributes);
 	}
 
 	metric->add_data_point(data_point);
@@ -526,13 +532,18 @@ Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname, const Dictiona
 		return err;
 	}
 
-	// Wait for connection
-	while (client->get_status() == HTTPClient::STATUS_CONNECTING || client->get_status() == HTTPClient::STATUS_RESOLVING) {
+	// Wait for connection — 50 × 50 ms = 2.5 s max, matching GDScript helper cadence.
+	for (int i = 0; i < 50; i++) {
 		client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		HTTPClient::Status s = client->get_status();
+		if (s != HTTPClient::STATUS_CONNECTING && s != HTTPClient::STATUS_RESOLVING) {
+			break;
+		}
+		OS::get_singleton()->delay_usec(50000);
 	}
 
 	if (client->get_status() != HTTPClient::STATUS_CONNECTED) {
+		ERR_PRINT("OTel: connect failed, status=" + itos(client->get_status()) + " host=" + host);
 		return FAILED;
 	}
 
@@ -551,20 +562,47 @@ Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname, const Dictiona
 	CharString body_utf8 = p_json_body.utf8();
 	err = client->request(HTTPClient::METHOD_POST, p_endpoint, request_headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
 	if (err != OK) {
+		ERR_PRINT("OTel: request() error=" + itos(err));
 		return err;
 	}
 
-	// Wait for response
-	while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
+	// Wait for response — 50 × 50 ms
+	for (int i = 0; i < 50; i++) {
 		client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		HTTPClient::Status s = client->get_status();
+		if (s == HTTPClient::STATUS_BODY || s == HTTPClient::STATUS_CONNECTED) {
+			break;
+		}
+		if (s == HTTPClient::STATUS_DISCONNECTED || s == HTTPClient::STATUS_CONNECTION_ERROR) {
+			ERR_PRINT("OTel: response wait failed, status=" + itos(s));
+			return FAILED;
+		}
+		OS::get_singleton()->delay_usec(50000);
 	}
 
-	if (client->get_status() != HTTPClient::STATUS_BODY && client->get_status() != HTTPClient::STATUS_CONNECTED) {
+	int code = client->get_response_code();
+	if (code < 200 || code >= 300) {
+		ERR_PRINT("OTel: HTTP " + itos(code) + " from " + host + p_endpoint);
 		return FAILED;
 	}
 
 	return OK;
+}
+
+void OpenTelemetry::_flush_wal_signal(const String &p_signal, const String &p_endpoint) {
+	if (!_wal.is_open()) {
+		return;
+	}
+	Vector<OTelWAL::Row> rows = _wal.read_all();
+	for (int i = 0; i < rows.size(); i++) {
+		if (rows[i].signal != p_signal) {
+			continue;
+		}
+		Error err = _send_otlp_request(p_endpoint, rows[i].payload);
+		if (err == OK) {
+			_wal.remove(rows[i].id);
+		}
+	}
 }
 
 void OpenTelemetry::FlushAllBufferedData() {
@@ -575,29 +613,45 @@ void OpenTelemetry::FlushAllBufferedData() {
 		if (!span.is_valid() || !span->is_ended()) {
 			continue;
 		}
-
 		state->add_span(span);
 		active_spans.erase(keys[i]);
 	}
 
-	// Use OTelDocument for serialization
+	// Serialize → write to WAL → drain WAL (retries any previous failures too)
 	if (state->get_spans().size() > 0) {
 		String json = document->serialize_traces(state);
-		_send_otlp_request("/v1/traces", json);
 		state->clear_spans();
+		if (_wal.is_open()) {
+			_wal.write("traces", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/traces", json);
+		}
 	}
 
 	if (state->get_metrics().size() > 0) {
 		String json = document->serialize_metrics(state);
-		_send_otlp_request("/v1/metrics", json);
 		state->clear_metrics();
+		if (_wal.is_open()) {
+			_wal.write("metrics", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/metrics", json);
+		}
 	}
 
 	if (state->get_logs().size() > 0) {
 		String json = document->serialize_logs(state);
-		_send_otlp_request("/v1/logs", json);
 		state->clear_logs();
+		if (_wal.is_open()) {
+			_wal.write("logs", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/logs", json);
+		}
 	}
+
+	// Drain WAL — sends current batch + any retries from prior failures
+	_flush_wal_signal("traces", "/v1/traces");
+	_flush_wal_signal("metrics", "/v1/metrics");
+	_flush_wal_signal("logs", "/v1/logs");
 }
 
 String OpenTelemetry::add_sink(String p_sink_name, String p_hostname, Dictionary p_headers) {

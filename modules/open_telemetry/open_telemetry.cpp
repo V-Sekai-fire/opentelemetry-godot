@@ -30,6 +30,7 @@
 
 #include "open_telemetry.h"
 
+#include "open_telemetry_logger.h" // needed here for full type (forward decl in header)
 #include "structures/otel_log.h"
 #include "structures/otel_metric.h"
 #include "structures/otel_resource.h"
@@ -37,7 +38,6 @@
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "open_telemetry_logger.h"  // needed here for full type (forward decl in header)
 
 // OpenTelemetryTracer implementation
 
@@ -509,12 +509,16 @@ void OpenTelemetry::_enqueue_from_url(const String &p_url,
 		return;
 	}
 
-	String host   = p_url;
-	int    port   = 4318;
-	bool   ssl    = false;
+	String host = p_url;
+	int port = 4318;
+	bool ssl = false;
 
-	if (host.begins_with("https://")) { ssl = true; host = host.substr(8); }
-	else if (host.begins_with("http://"))              { host = host.substr(7); }
+	if (host.begins_with("https://")) {
+		ssl = true;
+		host = host.substr(8);
+	} else if (host.begins_with("http://")) {
+		host = host.substr(7);
+	}
 
 	int colon = host.find(":");
 	if (colon != -1) {
@@ -531,11 +535,11 @@ void OpenTelemetry::_enqueue_from_url(const String &p_url,
 	}
 
 	PendingRequest req;
-	req.host        = host;
-	req.port        = port;
-	req.use_ssl     = ssl;
-	req.endpoint    = p_endpoint;
-	req.json_body   = p_json_body;
+	req.host = host;
+	req.port = port;
+	req.use_ssl = ssl;
+	req.endpoint = p_endpoint;
+	req.json_body = p_json_body;
 	req.headers_vec = hdr;
 	_send_queue.push_back(req);
 }
@@ -549,11 +553,13 @@ Error OpenTelemetry::_send_otlp_request(const String &p_endpoint, const String &
 	Array sink_names = sinks.keys();
 	for (int i = 0; i < sink_names.size(); i++) {
 		Dictionary sink = sinks[sink_names[i]];
-		if (!sink.has("enabled") || !sink["enabled"]) { continue; }
+		if (!sink.has("enabled") || !sink["enabled"]) {
+			continue;
+		}
 		_enqueue_from_url(
-			sink.get("hostname", ""),
-			sink.get("headers", Dictionary()),
-			p_endpoint, p_json_body);
+				sink.get("hostname", ""),
+				sink.get("headers", Dictionary()),
+				p_endpoint, p_json_body);
 	}
 	return OK;
 }
@@ -591,7 +597,7 @@ void OpenTelemetry::_advance_send_queue() {
 				tls = TLSOptions::client();
 			}
 			Error err = _http_client->connect_to_host(
-				_active_request.host, _active_request.port, tls);
+					_active_request.host, _active_request.port, tls);
 			if (err != OK) {
 				_http_client.unref();
 				return;
@@ -614,9 +620,9 @@ void OpenTelemetry::_advance_send_queue() {
 		case SEND_REQUESTING: {
 			CharString body = _active_request.json_body.utf8();
 			Error err = _http_client->request(HTTPClient::METHOD_POST,
-				_active_request.endpoint,
-				_active_request.headers_vec,
-				(const uint8_t *)body.get_data(), body.length());
+					_active_request.endpoint,
+					_active_request.headers_vec,
+					(const uint8_t *)body.get_data(), body.length());
 			if (err != OK) {
 				ERR_PRINT("OTel: request() error=" + itos(err));
 				_http_client.unref();

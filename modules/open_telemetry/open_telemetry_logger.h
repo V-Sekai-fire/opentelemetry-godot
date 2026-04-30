@@ -34,7 +34,7 @@
 #include "core/object/script_backtrace.h"
 #include "core/string/ustring.h"
 
-class OpenTelemetry;  // forward declaration — breaks circular include
+class OpenTelemetry; // forward declaration — breaks circular include
 
 class OpenTelemetryLogger : public Logger {
 private:

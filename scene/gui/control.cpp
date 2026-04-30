@@ -2535,6 +2535,26 @@ void Control::_call_gui_input(const Ref<InputEvent> &p_event) {
 void Control::gui_input(const Ref<InputEvent> &p_event) {
 }
 
+void Control::call_gui_input(const Ref<InputEvent> &p_event) {
+	ERR_FAIL_COND(p_event.is_null());
+	if (!is_inside_tree()) {
+		return;
+	}
+
+	Viewport *vp = get_viewport();
+	bool was_handled = vp ? vp->is_input_handled() : false;
+
+	if (vp) {
+		vp->set_input_handled(false);
+	}
+
+	_call_gui_input(p_event);
+
+	if (vp) {
+		vp->set_input_handled(was_handled);
+	}
+}
+
 void Control::accept_event() {
 	ERR_MAIN_THREAD_GUARD;
 	if (is_inside_tree()) {
@@ -4838,6 +4858,7 @@ void Control::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_focus_previous", "previous"), &Control::set_focus_previous);
 	ClassDB::bind_method(D_METHOD("get_focus_previous"), &Control::get_focus_previous);
 
+	ClassDB::bind_method(D_METHOD("call_gui_input", "event"), &Control::call_gui_input);
 	ClassDB::bind_method(D_METHOD("force_drag", "data", "preview"), &Control::force_drag);
 
 	ClassDB::bind_method(D_METHOD("accessibility_drag"), &Control::accessibility_drag);

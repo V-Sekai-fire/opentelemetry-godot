@@ -30,6 +30,8 @@
 
 #include "otel_log.h"
 
+#include "../otel_document.h"
+
 #include "core/object/class_db.h"
 #include "core/os/time.h"
 
@@ -68,7 +70,7 @@ void OTelLog::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "observed_time_unix_nano"), "set_observed_time_unix_nano", "get_observed_time_unix_nano");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "severity_number"), "set_severity_number", "get_severity_number");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "severity_text"), "set_severity_text", "get_severity_text");
-	ADD_PROPERTY(PropertyInfo(Variant::STRING, "body"), "set_body", "get_body");
+	ADD_PROPERTY(PropertyInfo(Variant::NIL, "body", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT), "set_body", "get_body");
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "attributes"), "set_attributes", "get_attributes");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "trace_id"), "set_trace_id", "get_trace_id");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "span_id"), "set_span_id", "get_span_id");
@@ -120,11 +122,11 @@ void OTelLog::set_severity_text(const String &p_text) {
 }
 
 // Body
-String OTelLog::get_body() const {
+Variant OTelLog::get_body() const {
 	return body;
 }
 
-void OTelLog::set_body(const String &p_body) {
+void OTelLog::set_body(const Variant &p_body) {
 	body = p_body;
 }
 
@@ -162,10 +164,10 @@ void OTelLog::set_span_id(const String &p_span_id) {
 Dictionary OTelLog::to_otlp_dict() const {
 	Dictionary log_dict;
 
-	log_dict["timeUnixNano"] = (int64_t)time_unix_nano;
+	log_dict["timeUnixNano"] = itos((int64_t)time_unix_nano);
 
 	if (observed_time_unix_nano > 0) {
-		log_dict["observedTimeUnixNano"] = (int64_t)observed_time_unix_nano;
+		log_dict["observedTimeUnixNano"] = itos((int64_t)observed_time_unix_nano);
 	}
 
 	if (severity_number != SEVERITY_NUMBER_UNSPECIFIED) {
@@ -176,14 +178,12 @@ Dictionary OTelLog::to_otlp_dict() const {
 		log_dict["severityText"] = severity_text;
 	}
 
-	if (!body.is_empty()) {
-		Dictionary body_value;
-		body_value["stringValue"] = body;
-		log_dict["body"] = body_value;
+	if (body.get_type() != Variant::NIL) {
+		log_dict["body"] = OTelDocument::variant_to_any_value(body);
 	}
 
 	if (attributes.size() > 0) {
-		log_dict["attributes"] = attributes;
+		log_dict["attributes"] = OTelDocument::attributes_to_otlp(attributes);
 	}
 
 	if (!trace_id.is_empty()) {

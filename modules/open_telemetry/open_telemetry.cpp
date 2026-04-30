@@ -30,6 +30,7 @@
 
 #include "open_telemetry.h"
 
+#include "open_telemetry_logger.h" // needed here for full type (forward decl in header)
 #include "structures/otel_log.h"
 #include "structures/otel_metric.h"
 #include "structures/otel_resource.h"
@@ -120,6 +121,8 @@ void OpenTelemetry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("record_metric", "name", "value", "unit", "metric_type", "attributes"), &OpenTelemetry::record_metric);
 	ClassDB::bind_method(D_METHOD("log_message", "level", "message", "attributes"), &OpenTelemetry::log_message);
 	ClassDB::bind_method(D_METHOD("flush_all"), &OpenTelemetry::flush_all);
+	ClassDB::bind_method(D_METHOD("drain_wal"), &OpenTelemetry::drain_wal);
+	ClassDB::bind_method(D_METHOD("record_crash", "message", "attributes"), &OpenTelemetry::record_crash, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("shutdown"), &OpenTelemetry::shutdown);
 
 	// Metrics API
@@ -141,6 +144,7 @@ void OpenTelemetry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_state"), &OpenTelemetry::get_state);
 	ClassDB::bind_method(D_METHOD("get_document"), &OpenTelemetry::get_document);
 
+	BIND_ENUM_CONSTANT(SPAN_KIND_UNSPECIFIED);
 	BIND_ENUM_CONSTANT(SPAN_KIND_INTERNAL);
 	BIND_ENUM_CONSTANT(SPAN_KIND_SERVER);
 	BIND_ENUM_CONSTANT(SPAN_KIND_CLIENT);
@@ -157,6 +161,16 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 	hostname = p_host;
 	resource_attributes = p_attributes;
 
+	if (p_host != "console" && !p_host.is_empty()) {
+		String wal_path = OS::get_singleton()->get_user_data_dir().path_join("otel_wal_" + p_name + ".db");
+		if (_wal.open(wal_path)) {
+			// Drain any crash events from the previous session immediately.
+			_flush_wal_signal("traces", "/v1/traces");
+			_flush_wal_signal("metrics", "/v1/metrics");
+			_flush_wal_signal("logs", "/v1/logs");
+		}
+	}
+
 	// Update state resource
 	if (!p_attributes.is_empty()) {
 		Array keys = p_attributes.keys();
@@ -170,6 +184,14 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 	state->get_scope()->set_name(p_name);
 	if (!p_version.is_empty()) {
 		state->get_scope()->set_version(p_version);
+	}
+
+	// Hook into Godot's logging system — at most once per process.
+	static bool s_logger_registered = false;
+	if (!s_logger_registered && p_host != "console" && !p_host.is_empty()) {
+		_otel_logger = memnew(OpenTelemetryLogger(this));
+		OS::get_singleton()->add_logger(_otel_logger);
+		s_logger_registered = true;
 	}
 
 	return "OK";
@@ -251,12 +273,27 @@ String OpenTelemetry::start_span(String p_name, SpanKind p_kind, Array p_links, 
 	if (trace_id.is_empty()) {
 		trace_id = generate_trace_id();
 	}
-
-	return start_span_with_id(p_name, generate_span_id());
+	String uuid = start_span_with_id(p_name, generate_span_id());
+	if (active_spans.has(uuid)) {
+		Ref<OTelSpan> span = active_spans[uuid];
+		span->set_kind((OTelSpan::SpanKind)p_kind);
+		if (!p_attributes.is_empty()) {
+			span->set_attributes(p_attributes);
+		}
+	}
+	return uuid;
 }
 
 String OpenTelemetry::start_span_with_parent(String p_name, String p_parent_span_uuid, SpanKind p_kind, Array p_links, Dictionary p_attributes) {
-	return start_span_with_parent_id(p_name, p_parent_span_uuid, generate_span_id());
+	String uuid = start_span_with_parent_id(p_name, p_parent_span_uuid, generate_span_id());
+	if (active_spans.has(uuid)) {
+		Ref<OTelSpan> span = active_spans[uuid];
+		span->set_kind((OTelSpan::SpanKind)p_kind);
+		if (!p_attributes.is_empty()) {
+			span->set_attributes(p_attributes);
+		}
+	}
+	return uuid;
 }
 
 String OpenTelemetry::start_span_with_id(String p_name, String p_span_id) {
@@ -394,12 +431,15 @@ void OpenTelemetry::record_metric(String p_name, float p_value, String p_unit, i
 	}
 	metric->set_type((OTelMetric::MetricType)p_metric_type);
 
-	// Create data point
+	// Create data point — OTLP field names and types per spec.
+	// startTimeUnixNano is "optional but encouraged" for rate calculation.
+	String ts = itos((int64_t)(Time::get_singleton()->get_unix_time_from_system() * 1e9));
 	Dictionary data_point;
-	data_point["time_unix_nano"] = Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL;
-	data_point["value"] = p_value;
+	data_point["startTimeUnixNano"] = ts;
+	data_point["timeUnixNano"] = ts;
+	data_point["asDouble"] = (double)p_value;
 	if (!p_attributes.is_empty()) {
-		data_point["attributes"] = p_attributes;
+		data_point["attributes"] = OTelDocument::attributes_to_otlp(p_attributes);
 	}
 
 	metric->add_data_point(data_point);
@@ -408,15 +448,18 @@ void OpenTelemetry::record_metric(String p_name, float p_value, String p_unit, i
 	CheckAndFlush();
 }
 
-void OpenTelemetry::log_message(String p_level, String p_message, Dictionary p_attributes) {
+void OpenTelemetry::log_message(String p_level, Variant p_body, Dictionary p_attributes) {
 	Ref<OTelLog> log;
 	log.instantiate();
 
-	log->set_body(p_message);
+	log->set_body(p_body);
 	if (!p_attributes.is_empty()) {
 		log->set_attributes(p_attributes);
 	}
-	log->set_time_unix_nano(Time::get_singleton()->get_unix_time_from_system() * 1000000000ULL);
+	uint64_t now_ns = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1000000000.0);
+	log->set_time_unix_nano(now_ns);
+	// Spec §LogRecord: observedTimeUnixNano MUST be set once observed.
+	log->set_observed_time_unix_nano(now_ns);
 
 	// Map log level string to severity
 	if (p_level == "TRACE") {
@@ -452,119 +495,176 @@ void OpenTelemetry::CheckAndFlush() {
 	last_flush_time = current_time;
 }
 
-Error OpenTelemetry::_send_otlp_request(const String &p_endpoint, const String &p_json_body) {
-	if (hostname.is_empty()) {
-		return ERR_UNCONFIGURED;
+// ── Non-blocking send: parse URL → enqueue ────────────────────────────────
+
+void OpenTelemetry::_enqueue_from_url(const String &p_url,
+		const Dictionary &p_sink_headers,
+		const String &p_endpoint,
+		const String &p_json_body) {
+	if (p_url.is_empty()) {
+		return;
+	}
+	// Console sink — immediate, no network.
+	if (p_url == "console") {
+		return;
 	}
 
-	// Console sink: print OTLP JSON to the Godot output panel instead of HTTP.
-	if (hostname == "console") {
-		print_verbose("[OTel] " + p_endpoint + " " + p_json_body);
-		return OK;
-	}
-
-	// Send to default sink
-	Error err = _send_to_sink(hostname, headers, p_endpoint, p_json_body);
-	if (err != OK) {
-		ERR_PRINT("Failed to send to default sink: " + itos(err));
-	}
-
-	// Send to additional sinks
-	Array sink_names = sinks.keys();
-	for (int i = 0; i < sink_names.size(); i++) {
-		String sink_name = sink_names[i];
-		Dictionary sink = sinks[sink_name];
-
-		if (!sink.has("enabled") || !sink["enabled"]) {
-			continue;
-		}
-
-		String sink_hostname = sink.get("hostname", "");
-		Dictionary sink_headers = sink.get("headers", Dictionary());
-
-		Error sink_err = _send_to_sink(sink_hostname, sink_headers, p_endpoint, p_json_body);
-		if (sink_err != OK) {
-			ERR_PRINT("Failed to send to sink '" + sink_name + "': " + itos(sink_err));
-		}
-	}
-
-	return OK;
-}
-
-Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname, const Dictionary &p_sink_headers, const String &p_endpoint, const String &p_json_body) {
-	if (p_sink_hostname.is_empty()) {
-		return ERR_UNCONFIGURED;
-	}
-
-	// Parse hostname
-	String host = p_sink_hostname;
+	String host = p_url;
 	int port = 4318;
-	bool use_ssl = false;
+	bool ssl = false;
 
 	if (host.begins_with("https://")) {
-		use_ssl = true;
+		ssl = true;
 		host = host.substr(8);
 	} else if (host.begins_with("http://")) {
 		host = host.substr(7);
 	}
 
-	int colon_pos = host.find(":");
-	if (colon_pos != -1) {
-		port = host.substr(colon_pos + 1).to_int();
-		host = host.substr(0, colon_pos);
+	int colon = host.find(":");
+	if (colon != -1) {
+		port = host.substr(colon + 1).to_int();
+		host = host.substr(0, colon);
 	}
 
-	// Create HTTP client
-	Ref<HTTPClient> client = HTTPClient::create();
-	Ref<TLSOptions> tls_options;
-	if (use_ssl) {
-		tls_options = TLSOptions::client();
+	Vector<String> hdr;
+	hdr.push_back("Content-Type: application/json");
+	Array keys = p_sink_headers.keys();
+	for (int i = 0; i < keys.size(); i++) {
+		String k = keys[i];
+		hdr.push_back(k + ": " + String(p_sink_headers[k]));
 	}
 
-	Error err = client->connect_to_host(host, port, tls_options);
-	if (err != OK) {
-		return err;
+	PendingRequest req;
+	req.host = host;
+	req.port = port;
+	req.use_ssl = ssl;
+	req.endpoint = p_endpoint;
+	req.json_body = p_json_body;
+	req.headers_vec = hdr;
+	_send_queue.push_back(req);
+}
+
+Error OpenTelemetry::_send_otlp_request(const String &p_endpoint, const String &p_json_body) {
+	if (hostname.is_empty()) {
+		return ERR_UNCONFIGURED;
 	}
+	_enqueue_from_url(hostname, headers, p_endpoint, p_json_body);
 
-	// Wait for connection
-	while (client->get_status() == HTTPClient::STATUS_CONNECTING || client->get_status() == HTTPClient::STATUS_RESOLVING) {
-		client->poll();
-		OS::get_singleton()->delay_usec(1000);
+	Array sink_names = sinks.keys();
+	for (int i = 0; i < sink_names.size(); i++) {
+		Dictionary sink = sinks[sink_names[i]];
+		if (!sink.has("enabled") || !sink["enabled"]) {
+			continue;
+		}
+		_enqueue_from_url(
+				sink.get("hostname", ""),
+				sink.get("headers", Dictionary()),
+				p_endpoint, p_json_body);
 	}
-
-	if (client->get_status() != HTTPClient::STATUS_CONNECTED) {
-		return FAILED;
-	}
-
-	// Prepare headers
-	Vector<String> request_headers;
-	request_headers.push_back("Content-Type: application/json");
-
-	Array header_keys = p_sink_headers.keys();
-	for (int i = 0; i < header_keys.size(); i++) {
-		String key = header_keys[i];
-		String value = p_sink_headers[key];
-		request_headers.push_back(key + ": " + value);
-	}
-
-	// Send request
-	CharString body_utf8 = p_json_body.utf8();
-	err = client->request(HTTPClient::METHOD_POST, p_endpoint, request_headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
-	if (err != OK) {
-		return err;
-	}
-
-	// Wait for response
-	while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
-		client->poll();
-		OS::get_singleton()->delay_usec(1000);
-	}
-
-	if (client->get_status() != HTTPClient::STATUS_BODY && client->get_status() != HTTPClient::STATUS_CONNECTED) {
-		return FAILED;
-	}
-
 	return OK;
+}
+
+Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname,
+		const Dictionary &p_sink_headers,
+		const String &p_endpoint,
+		const String &p_json_body) {
+	_enqueue_from_url(p_sink_hostname, p_sink_headers, p_endpoint, p_json_body);
+	return OK;
+}
+
+// ── State-machine: one step per _process() frame ──────────────────────────
+
+void OpenTelemetry::_notification(int p_what) {
+	if (p_what == NOTIFICATION_PROCESS) {
+		_advance_send_queue();
+	} else if (p_what == NOTIFICATION_ENTER_TREE) {
+		set_process(true);
+	}
+}
+
+void OpenTelemetry::_advance_send_queue() {
+	switch (_send_state) {
+		case SEND_IDLE: {
+			if (_send_queue.is_empty()) {
+				return;
+			}
+			_active_request = _send_queue[0];
+			_send_queue.remove_at(0);
+
+			_http_client = HTTPClient::create();
+			Ref<TLSOptions> tls;
+			if (_active_request.use_ssl) {
+				tls = TLSOptions::client();
+			}
+			Error err = _http_client->connect_to_host(
+					_active_request.host, _active_request.port, tls);
+			if (err != OK) {
+				_http_client.unref();
+				return;
+			}
+			_send_state = SEND_CONNECTING;
+		} break;
+
+		case SEND_CONNECTING: {
+			_http_client->poll();
+			HTTPClient::Status s = _http_client->get_status();
+			if (s == HTTPClient::STATUS_CONNECTED) {
+				_send_state = SEND_REQUESTING;
+			} else if (s != HTTPClient::STATUS_CONNECTING && s != HTTPClient::STATUS_RESOLVING) {
+				ERR_PRINT("OTel: connect failed host=" + _active_request.host + " status=" + itos(s));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			}
+		} break;
+
+		case SEND_REQUESTING: {
+			CharString body = _active_request.json_body.utf8();
+			Error err = _http_client->request(HTTPClient::METHOD_POST,
+					_active_request.endpoint,
+					_active_request.headers_vec,
+					(const uint8_t *)body.get_data(), body.length());
+			if (err != OK) {
+				ERR_PRINT("OTel: request() error=" + itos(err));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			} else {
+				_send_state = SEND_READING;
+			}
+		} break;
+
+		case SEND_READING: {
+			_http_client->poll();
+			HTTPClient::Status s = _http_client->get_status();
+			if (s == HTTPClient::STATUS_BODY || s == HTTPClient::STATUS_CONNECTED) {
+				int code = _http_client->get_response_code();
+				if (code < 200 || code >= 300) {
+					ERR_PRINT("OTel: HTTP " + itos(code) + " from " + _active_request.host);
+				}
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			} else if (s == HTTPClient::STATUS_DISCONNECTED || s == HTTPClient::STATUS_CONNECTION_ERROR) {
+				ERR_PRINT("OTel: response error status=" + itos(s));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			}
+		} break;
+	}
+}
+
+void OpenTelemetry::_flush_wal_signal(const String &p_signal, const String &p_endpoint) {
+	if (!_wal.is_open()) {
+		return;
+	}
+	Vector<OTelWAL::Row> rows = _wal.read_all();
+	for (int i = 0; i < rows.size(); i++) {
+		if (rows[i].signal != p_signal) {
+			continue;
+		}
+		Error err = _send_otlp_request(p_endpoint, rows[i].payload);
+		if (err == OK) {
+			_wal.remove(rows[i].id);
+		}
+	}
 }
 
 void OpenTelemetry::FlushAllBufferedData() {
@@ -575,29 +675,45 @@ void OpenTelemetry::FlushAllBufferedData() {
 		if (!span.is_valid() || !span->is_ended()) {
 			continue;
 		}
-
 		state->add_span(span);
 		active_spans.erase(keys[i]);
 	}
 
-	// Use OTelDocument for serialization
+	// Serialize → write to WAL → drain WAL (retries any previous failures too)
 	if (state->get_spans().size() > 0) {
 		String json = document->serialize_traces(state);
-		_send_otlp_request("/v1/traces", json);
 		state->clear_spans();
+		if (_wal.is_open()) {
+			_wal.write("traces", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/traces", json);
+		}
 	}
 
 	if (state->get_metrics().size() > 0) {
 		String json = document->serialize_metrics(state);
-		_send_otlp_request("/v1/metrics", json);
 		state->clear_metrics();
+		if (_wal.is_open()) {
+			_wal.write("metrics", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/metrics", json);
+		}
 	}
 
 	if (state->get_logs().size() > 0) {
 		String json = document->serialize_logs(state);
-		_send_otlp_request("/v1/logs", json);
 		state->clear_logs();
+		if (_wal.is_open()) {
+			_wal.write("logs", generate_uuid_v7(), json);
+		} else {
+			_send_otlp_request("/v1/logs", json);
+		}
 	}
+
+	// Drain WAL — sends current batch + any retries from prior failures
+	_flush_wal_signal("traces", "/v1/traces");
+	_flush_wal_signal("metrics", "/v1/metrics");
+	_flush_wal_signal("logs", "/v1/logs");
 }
 
 String OpenTelemetry::add_sink(String p_sink_name, String p_hostname, Dictionary p_headers) {
@@ -650,10 +766,53 @@ void OpenTelemetry::flush_all() {
 	FlushAllBufferedData();
 }
 
+void OpenTelemetry::drain_wal() {
+	_flush_wal_signal("traces", "/v1/traces");
+	_flush_wal_signal("metrics", "/v1/metrics");
+	_flush_wal_signal("logs", "/v1/logs");
+}
+
+void OpenTelemetry::record_crash(String p_message, Dictionary p_attributes) {
+	if (!_wal.is_open()) {
+		return;
+	}
+	// One crash per session — Crashlytics model.
+	// NOTIFICATION_CRASH fires once; this guards against erroneous GDScript loops.
+	if (_crash_recorded) {
+		return;
+	}
+	_crash_recorded = true;
+	// Build a minimal error span and write ONLY to WAL — no HTTP.
+	// The process may be dying; SQLite WAL write is the only safe operation.
+	Ref<OTelSpan> span;
+	span.instantiate();
+	span->set_name("crash");
+	span->set_trace_id(generate_trace_id());
+	span->set_span_id(generate_span_id());
+	span->set_kind(OTelSpan::SPAN_KIND_INTERNAL);
+	uint64_t now = (uint64_t)(Time::get_singleton()->get_unix_time_from_system() * 1e9);
+	span->set_start_time_unix_nano(now);
+	span->set_end_time_unix_nano(now);
+	span->set_status_code(OTelSpan::STATUS_CODE_ERROR);
+	span->set_status_message(p_message);
+
+	Dictionary attrs = p_attributes;
+	attrs["exception.message"] = p_message;
+	attrs["exception.type"] = "crash";
+	span->set_attributes(attrs);
+
+	state->add_span(span);
+	String json = document->serialize_traces(state);
+	state->clear_spans();
+
+	_wal.write("traces", generate_uuid_v7(), json);
+}
+
 String OpenTelemetry::shutdown() {
 	FlushAllBufferedData();
 	active_spans.clear();
 	state->clear_all();
+	_wal.close();
 	return "OK";
 }
 

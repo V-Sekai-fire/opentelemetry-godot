@@ -30,6 +30,8 @@
 
 #include "otel_scope.h"
 
+#include "../otel_document.h"
+
 #include "core/object/class_db.h"
 
 void OTelScope::_bind_methods() {
@@ -95,41 +97,7 @@ Dictionary OTelScope::to_otlp_dict() const {
 	}
 
 	if (attributes.size() > 0) {
-		// Convert attributes to OTLP format
-		Array otlp_attributes;
-		Array keys = attributes.keys();
-
-		for (int i = 0; i < keys.size(); i++) {
-			String key = keys[i];
-			Variant value = attributes[key];
-
-			Dictionary attr;
-			attr["key"] = key;
-
-			Dictionary value_dict;
-			switch (value.get_type()) {
-				case Variant::STRING:
-					value_dict["stringValue"] = String(value);
-					break;
-				case Variant::INT:
-					value_dict["intValue"] = (int64_t)value;
-					break;
-				case Variant::FLOAT:
-					value_dict["doubleValue"] = (double)value;
-					break;
-				case Variant::BOOL:
-					value_dict["boolValue"] = (bool)value;
-					break;
-				default:
-					value_dict["stringValue"] = String(value);
-					break;
-			}
-
-			attr["value"] = value_dict;
-			otlp_attributes.push_back(attr);
-		}
-
-		scope_dict["attributes"] = otlp_attributes;
+		scope_dict["attributes"] = OTelDocument::attributes_to_otlp(attributes);
 	}
 
 	return scope_dict;

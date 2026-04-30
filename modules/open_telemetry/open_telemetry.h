@@ -40,19 +40,23 @@
 #include "core/templates/cowdata.h"
 #include "core/templates/vector.h"
 #include "core/variant/variant.h"
+#include "scene/main/node.h"
 
 // New structure classes
 #include "otel_document.h"
 #include "otel_state.h"
+#include "otel_wal.h"
 #include "structures/otel_span.h"
 
-// Deprecated enums - kept for backward compatibility, map to OTelSpan enums
+class OpenTelemetryLogger; // forward declaration
+
 enum SpanKind {
-	SPAN_KIND_INTERNAL = 0,
-	SPAN_KIND_SERVER = 1,
-	SPAN_KIND_CLIENT = 2,
-	SPAN_KIND_PRODUCER = 3,
-	SPAN_KIND_CONSUMER = 4,
+	SPAN_KIND_UNSPECIFIED = 0,
+	SPAN_KIND_INTERNAL = 1,
+	SPAN_KIND_SERVER = 2,
+	SPAN_KIND_CLIENT = 3,
+	SPAN_KIND_PRODUCER = 4,
+	SPAN_KIND_CONSUMER = 5,
 };
 
 enum StatusCode {
@@ -102,8 +106,8 @@ protected:
 	static void _bind_methods();
 };
 
-class OpenTelemetry : public Object {
-	GDCLASS(OpenTelemetry, Object);
+class OpenTelemetry : public Node {
+	GDCLASS(OpenTelemetry, Node);
 
 private:
 	// New structure-based state
@@ -126,8 +130,34 @@ private:
 	// Multi-sink support
 	Dictionary sinks;
 
-	// HTTP client for OTLP export
-	Ref<HTTPClient> http_client;
+	// JSONL WAL — persists telemetry before HTTP export; retried on next flush
+	OTelWAL _wal;
+
+	// Engine logger hook — forwards print/warn/error to OTel log records
+	OpenTelemetryLogger *_otel_logger = nullptr;
+
+	// Non-blocking send: queue + state machine driven by poll()
+	struct PendingRequest {
+		String host;
+		int port;
+		bool use_ssl;
+		String endpoint;
+		String json_body;
+		Vector<String> headers_vec;
+	};
+	Vector<PendingRequest> _send_queue;
+
+	enum SendState { SEND_IDLE,
+		SEND_CONNECTING,
+		SEND_REQUESTING,
+		SEND_READING };
+	SendState _send_state = SEND_IDLE;
+	Ref<HTTPClient> _http_client;
+	PendingRequest _active_request;
+
+	// Parse URL string → fill PendingRequest fields and push to queue.
+	void _enqueue_from_url(const String &p_url, const Dictionary &p_sink_headers,
+			const String &p_endpoint, const String &p_json_body);
 
 protected:
 	static void _bind_methods();
@@ -151,9 +181,15 @@ public:
 	void set_flush_interval(int p_interval_ms);
 	void set_batch_size(int p_size);
 	void record_metric(String p_name, float p_value, String p_unit, int p_metric_type, Dictionary p_attributes);
-	void log_message(String p_level, String p_message, Dictionary p_attributes);
+	void log_message(String p_level, Variant p_body, Dictionary p_attributes);
 	void flush_all();
+	void drain_wal();
+
+	void record_crash(String p_message, Dictionary p_attributes = Dictionary());
 	String shutdown();
+
+protected:
+	void _notification(int p_what);
 
 	// Metrics API
 	String create_counter(String p_name, String p_unit = "", String p_description = "");
@@ -169,6 +205,9 @@ public:
 	String set_sink_enabled(String p_sink_name, bool p_enabled);
 	Dictionary get_sink(String p_sink_name);
 	Array list_sinks();
+
+private:
+	void _advance_send_queue();
 
 	// Direct access to new classes (for advanced usage)
 	Ref<OTelState> get_state() const { return state; }
@@ -188,6 +227,10 @@ private:
 
 	void CheckAndFlush();
 	void FlushAllBufferedData();
+	void _flush_wal_signal(const String &p_signal, const String &p_endpoint);
+
+	// One crash per session — Crashlytics model.
+	bool _crash_recorded = false;
 };
 
 VARIANT_ENUM_CAST(StatusCode);

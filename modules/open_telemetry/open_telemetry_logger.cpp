@@ -30,9 +30,13 @@
 
 #include "open_telemetry_logger.h"
 
+#include "open_telemetry.h"
+
 #include "core/os/time.h"
 #include "core/string/print_string.h"
 #include "core/string/ustring.h"
+
+#include <cstdio>
 
 OpenTelemetryLogger::OpenTelemetryLogger(OpenTelemetry *p_otel) {
 	otel_instance = p_otel;

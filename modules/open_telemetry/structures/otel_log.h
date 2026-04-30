@@ -54,7 +54,7 @@ private:
 	uint64_t observed_time_unix_nano = 0;
 	SeverityNumber severity_number = SEVERITY_NUMBER_UNSPECIFIED;
 	String severity_text;
-	String body;
+	Variant body;
 	Dictionary attributes;
 	String trace_id;
 	String span_id;
@@ -79,9 +79,9 @@ public:
 	String get_severity_text() const;
 	void set_severity_text(const String &p_text);
 
-	// Body
-	String get_body() const;
-	void set_body(const String &p_body);
+	// Body — any Godot Variant; serialized as OTLP AnyValue
+	Variant get_body() const;
+	void set_body(const Variant &p_body);
 
 	// Attributes
 	Dictionary get_attributes() const;

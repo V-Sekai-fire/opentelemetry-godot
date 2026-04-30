@@ -58,6 +58,7 @@ private:
 	String unit;
 	MetricType type = METRIC_TYPE_GAUGE;
 	AggregationTemporality temporality = AGGREGATION_TEMPORALITY_CUMULATIVE;
+	bool is_monotonic = true;
 
 	// Data points
 	Array data_points;
@@ -80,6 +81,9 @@ public:
 
 	AggregationTemporality get_temporality() const;
 	void set_temporality(AggregationTemporality p_temporality);
+
+	bool get_is_monotonic() const;
+	void set_is_monotonic(bool p_monotonic);
 
 	// Data points
 	Array get_data_points() const;

@@ -4003,6 +4003,11 @@ void Viewport::set_input_as_handled() {
 	local_input_handled = true;
 }
 
+void Viewport::set_input_handled(bool p_handled) {
+	ERR_MAIN_THREAD_GUARD;
+	local_input_handled = p_handled;
+}
+
 bool Viewport::is_input_handled() const {
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!handle_input_locally) {

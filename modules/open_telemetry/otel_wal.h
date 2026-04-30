@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  otel_document.h                                                       */
+/*  otel_wal.h                                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,44 +30,31 @@
 
 #pragma once
 
-#include "core/io/resource.h"
-#include "core/variant/typed_array.h"
+#include "core/object/ref_counted.h"
+#include "core/string/ustring.h"
+#include "core/templates/vector.h"
 
-class OTelState;
-class OTelSpan;
-class OTelResource;
-class OTelScope;
+class SQLite;
 
-// OTelDocument handles serialization/deserialization of OTLP data
-// Similar to GLTFDocument - central conversion between internal structures and OTLP JSON
-class OTelDocument : public Resource {
-	GDCLASS(OTelDocument, Resource);
-
-protected:
-	static void _bind_methods();
+// SQLite WAL for OpenTelemetry telemetry.
+// Rows persisted before HTTP export; deleted only after HTTP 200.
+// journal_mode=WAL ensures append writes survive process crashes.
+class OTelWAL {
+	Ref<SQLite> _db;
+	bool _open = false;
 
 public:
-	OTelDocument();
+	bool open(const String &p_path);
+	void close();
+	bool is_open() const { return _open; }
 
-	// Serialization: Internal structures -> OTLP JSON
-	String serialize_traces(Ref<OTelState> p_state);
-	String serialize_metrics(Ref<OTelState> p_state);
-	String serialize_logs(Ref<OTelState> p_state);
+	bool write(const String &p_signal, const String &p_id, const String &p_payload);
 
-	// Deserialization: OTLP JSON -> Internal structures (for reflector)
-	Ref<OTelState> deserialize_traces(const String &p_json);
-	Ref<OTelState> deserialize_metrics(const String &p_json);
-	Ref<OTelState> deserialize_logs(const String &p_json);
-
-	// Build complete OTLP payload
-	Dictionary build_trace_payload(Ref<OTelResource> p_resource, Ref<OTelScope> p_scope, const TypedArray<OTelSpan> &p_spans);
-	Dictionary build_metric_payload(Ref<OTelResource> p_resource, Ref<OTelScope> p_scope, const Array &p_metrics);
-	Dictionary build_log_payload(Ref<OTelResource> p_resource, Ref<OTelScope> p_scope, const Array &p_logs);
-
-	// Helper methods
-	static Dictionary attribute_to_otlp(const String &p_key, const Variant &p_value);
-	static Array attributes_to_otlp(const Dictionary &p_attributes);
-	static Dictionary attributes_from_otlp(const Array &p_otlp_attributes);
-	// Convert any Godot Variant to an OTLP AnyValue dictionary.
-	static Dictionary variant_to_any_value(const Variant &p_value);
+	struct Row {
+		String id;
+		String signal;
+		String payload;
+	};
+	Vector<Row> read_all();
+	bool remove(const String &p_id);
 };

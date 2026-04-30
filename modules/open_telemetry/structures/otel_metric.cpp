@@ -42,6 +42,8 @@ void OTelMetric::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_metric_type", "type"), &OTelMetric::set_type);
 	ClassDB::bind_method(D_METHOD("get_temporality"), &OTelMetric::get_temporality);
 	ClassDB::bind_method(D_METHOD("set_temporality", "temporality"), &OTelMetric::set_temporality);
+	ClassDB::bind_method(D_METHOD("get_is_monotonic"), &OTelMetric::get_is_monotonic);
+	ClassDB::bind_method(D_METHOD("set_is_monotonic", "monotonic"), &OTelMetric::set_is_monotonic);
 
 	// Data points
 	ClassDB::bind_method(D_METHOD("get_data_points"), &OTelMetric::get_data_points);
@@ -104,6 +106,14 @@ void OTelMetric::set_temporality(AggregationTemporality p_temporality) {
 	temporality = p_temporality;
 }
 
+bool OTelMetric::get_is_monotonic() const {
+	return is_monotonic;
+}
+
+void OTelMetric::set_is_monotonic(bool p_monotonic) {
+	is_monotonic = p_monotonic;
+}
+
 // Data points
 Array OTelMetric::get_data_points() const {
 	return data_points;
@@ -143,7 +153,7 @@ Dictionary OTelMetric::to_otlp_dict() const {
 			Dictionary sum;
 			sum["dataPoints"] = data_points;
 			sum["aggregationTemporality"] = (int)temporality;
-			sum["isMonotonic"] = true;
+			sum["isMonotonic"] = is_monotonic;
 			metric_dict["sum"] = sum;
 			break;
 		}

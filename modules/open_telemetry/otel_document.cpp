@@ -69,7 +69,7 @@ Dictionary OTelDocument::attribute_to_otlp(const String &p_key, const Variant &p
 			value_dict["stringValue"] = String(p_value);
 			break;
 		case Variant::INT:
-			value_dict["intValue"] = (int64_t)p_value;
+			value_dict["intValue"] = itos((int64_t)p_value);
 			break;
 		case Variant::FLOAT:
 			value_dict["doubleValue"] = (double)p_value;
@@ -84,6 +84,57 @@ Dictionary OTelDocument::attribute_to_otlp(const String &p_key, const Variant &p
 
 	attr["value"] = value_dict;
 	return attr;
+}
+
+// Helper: Convert any Godot Variant to an OTLP AnyValue dictionary.
+// Mirrors the mapping JSON.from_native() uses, targeting OTLP wire types.
+Dictionary OTelDocument::variant_to_any_value(const Variant &p_value) {
+	Dictionary av;
+	switch (p_value.get_type()) {
+		case Variant::STRING:
+			av["stringValue"] = String(p_value);
+			break;
+		case Variant::BOOL:
+			av["boolValue"] = (bool)p_value;
+			break;
+		case Variant::INT:
+			av["intValue"] = itos((int64_t)p_value);
+			break;
+		case Variant::FLOAT:
+			av["doubleValue"] = (double)p_value;
+			break;
+		case Variant::DICTIONARY: {
+			Dictionary d = p_value;
+			Array kv_list;
+			Array keys = d.keys();
+			for (int i = 0; i < keys.size(); i++) {
+				Dictionary kv;
+				kv["key"] = keys[i].operator String();
+				kv["value"] = variant_to_any_value(d[keys[i]]);
+				kv_list.push_back(kv);
+			}
+			Dictionary kvlist;
+			kvlist["values"] = kv_list;
+			av["kvlistValue"] = kvlist;
+			break;
+		}
+		case Variant::ARRAY: {
+			Array src = p_value;
+			Array values;
+			for (int i = 0; i < src.size(); i++) {
+				values.push_back(variant_to_any_value(src[i]));
+			}
+			Dictionary arr;
+			arr["values"] = values;
+			av["arrayValue"] = arr;
+			break;
+		}
+		default:
+			// Fallback: JSON-stringify unknown types (PackedArray, Object, etc.)
+			av["stringValue"] = JSON::stringify(p_value);
+			break;
+	}
+	return av;
 }
 
 // Helper: Convert Dictionary of attributes to OTLP array format

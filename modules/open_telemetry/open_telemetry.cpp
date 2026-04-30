@@ -37,6 +37,7 @@
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "open_telemetry_logger.h"  // needed here for full type (forward decl in header)
 
 // OpenTelemetryTracer implementation
 
@@ -183,6 +184,14 @@ String OpenTelemetry::init_tracer_provider(String p_name, String p_host, Diction
 	state->get_scope()->set_name(p_name);
 	if (!p_version.is_empty()) {
 		state->get_scope()->set_version(p_version);
+	}
+
+	// Hook into Godot's logging system — at most once per process.
+	static bool s_logger_registered = false;
+	if (!s_logger_registered && p_host != "console" && !p_host.is_empty()) {
+		_otel_logger = memnew(OpenTelemetryLogger(this));
+		OS::get_singleton()->add_logger(_otel_logger);
+		s_logger_registered = true;
 	}
 
 	return "OK";
@@ -486,135 +495,154 @@ void OpenTelemetry::CheckAndFlush() {
 	last_flush_time = current_time;
 }
 
+// ── Non-blocking send: parse URL → enqueue ────────────────────────────────
+
+void OpenTelemetry::_enqueue_from_url(const String &p_url,
+		const Dictionary &p_sink_headers,
+		const String &p_endpoint,
+		const String &p_json_body) {
+	if (p_url.is_empty()) {
+		return;
+	}
+	// Console sink — immediate, no network.
+	if (p_url == "console") {
+		return;
+	}
+
+	String host   = p_url;
+	int    port   = 4318;
+	bool   ssl    = false;
+
+	if (host.begins_with("https://")) { ssl = true; host = host.substr(8); }
+	else if (host.begins_with("http://"))              { host = host.substr(7); }
+
+	int colon = host.find(":");
+	if (colon != -1) {
+		port = host.substr(colon + 1).to_int();
+		host = host.substr(0, colon);
+	}
+
+	Vector<String> hdr;
+	hdr.push_back("Content-Type: application/json");
+	Array keys = p_sink_headers.keys();
+	for (int i = 0; i < keys.size(); i++) {
+		String k = keys[i];
+		hdr.push_back(k + ": " + String(p_sink_headers[k]));
+	}
+
+	PendingRequest req;
+	req.host        = host;
+	req.port        = port;
+	req.use_ssl     = ssl;
+	req.endpoint    = p_endpoint;
+	req.json_body   = p_json_body;
+	req.headers_vec = hdr;
+	_send_queue.push_back(req);
+}
+
 Error OpenTelemetry::_send_otlp_request(const String &p_endpoint, const String &p_json_body) {
 	if (hostname.is_empty()) {
 		return ERR_UNCONFIGURED;
 	}
+	_enqueue_from_url(hostname, headers, p_endpoint, p_json_body);
 
-	// Console sink: print OTLP JSON to the Godot output panel instead of HTTP.
-	if (hostname == "console") {
-		print_verbose("[OTel] " + p_endpoint + " " + p_json_body);
-		return OK;
-	}
-
-	// Send to default sink
-	Error err = _send_to_sink(hostname, headers, p_endpoint, p_json_body);
-	if (err != OK) {
-		ERR_PRINT("Failed to send to default sink: " + itos(err));
-	}
-
-	// Send to additional sinks
 	Array sink_names = sinks.keys();
 	for (int i = 0; i < sink_names.size(); i++) {
-		String sink_name = sink_names[i];
-		Dictionary sink = sinks[sink_name];
-
-		if (!sink.has("enabled") || !sink["enabled"]) {
-			continue;
-		}
-
-		String sink_hostname = sink.get("hostname", "");
-		Dictionary sink_headers = sink.get("headers", Dictionary());
-
-		Error sink_err = _send_to_sink(sink_hostname, sink_headers, p_endpoint, p_json_body);
-		if (sink_err != OK) {
-			ERR_PRINT("Failed to send to sink '" + sink_name + "': " + itos(sink_err));
-		}
+		Dictionary sink = sinks[sink_names[i]];
+		if (!sink.has("enabled") || !sink["enabled"]) { continue; }
+		_enqueue_from_url(
+			sink.get("hostname", ""),
+			sink.get("headers", Dictionary()),
+			p_endpoint, p_json_body);
 	}
-
 	return OK;
 }
 
-Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname, const Dictionary &p_sink_headers, const String &p_endpoint, const String &p_json_body) {
-	if (p_sink_hostname.is_empty()) {
-		return ERR_UNCONFIGURED;
-	}
-
-	// Parse hostname
-	String host = p_sink_hostname;
-	int port = 4318;
-	bool use_ssl = false;
-
-	if (host.begins_with("https://")) {
-		use_ssl = true;
-		host = host.substr(8);
-	} else if (host.begins_with("http://")) {
-		host = host.substr(7);
-	}
-
-	int colon_pos = host.find(":");
-	if (colon_pos != -1) {
-		port = host.substr(colon_pos + 1).to_int();
-		host = host.substr(0, colon_pos);
-	}
-
-	// Create HTTP client
-	Ref<HTTPClient> client = HTTPClient::create();
-	Ref<TLSOptions> tls_options;
-	if (use_ssl) {
-		tls_options = TLSOptions::client();
-	}
-
-	Error err = client->connect_to_host(host, port, tls_options);
-	if (err != OK) {
-		return err;
-	}
-
-	// Wait for connection — 50 × 50 ms = 2.5 s max, matching GDScript helper cadence.
-	for (int i = 0; i < 50; i++) {
-		client->poll();
-		HTTPClient::Status s = client->get_status();
-		if (s != HTTPClient::STATUS_CONNECTING && s != HTTPClient::STATUS_RESOLVING) {
-			break;
-		}
-		OS::get_singleton()->delay_usec(50000);
-	}
-
-	if (client->get_status() != HTTPClient::STATUS_CONNECTED) {
-		ERR_PRINT("OTel: connect failed, status=" + itos(client->get_status()) + " host=" + host);
-		return FAILED;
-	}
-
-	// Prepare headers
-	Vector<String> request_headers;
-	request_headers.push_back("Content-Type: application/json");
-
-	Array header_keys = p_sink_headers.keys();
-	for (int i = 0; i < header_keys.size(); i++) {
-		String key = header_keys[i];
-		String value = p_sink_headers[key];
-		request_headers.push_back(key + ": " + value);
-	}
-
-	// Send request
-	CharString body_utf8 = p_json_body.utf8();
-	err = client->request(HTTPClient::METHOD_POST, p_endpoint, request_headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
-	if (err != OK) {
-		ERR_PRINT("OTel: request() error=" + itos(err));
-		return err;
-	}
-
-	// Wait for response — 50 × 50 ms
-	for (int i = 0; i < 50; i++) {
-		client->poll();
-		HTTPClient::Status s = client->get_status();
-		if (s == HTTPClient::STATUS_BODY || s == HTTPClient::STATUS_CONNECTED) {
-			break;
-		}
-		if (s == HTTPClient::STATUS_DISCONNECTED || s == HTTPClient::STATUS_CONNECTION_ERROR) {
-			ERR_PRINT("OTel: response wait failed, status=" + itos(s));
-			return FAILED;
-		}
-		OS::get_singleton()->delay_usec(50000);
-	}
-
-	int code = client->get_response_code();
-	if (code < 200 || code >= 300) {
-		ERR_PRINT("OTel: HTTP " + itos(code) + " from " + host + p_endpoint);
-		return FAILED;
-	}
-
+Error OpenTelemetry::_send_to_sink(const String &p_sink_hostname,
+		const Dictionary &p_sink_headers,
+		const String &p_endpoint,
+		const String &p_json_body) {
+	_enqueue_from_url(p_sink_hostname, p_sink_headers, p_endpoint, p_json_body);
 	return OK;
+}
+
+// ── State-machine: one step per _process() frame ──────────────────────────
+
+void OpenTelemetry::_notification(int p_what) {
+	if (p_what == NOTIFICATION_PROCESS) {
+		_advance_send_queue();
+	} else if (p_what == NOTIFICATION_ENTER_TREE) {
+		set_process(true);
+	}
+}
+
+void OpenTelemetry::_advance_send_queue() {
+	switch (_send_state) {
+		case SEND_IDLE: {
+			if (_send_queue.is_empty()) {
+				return;
+			}
+			_active_request = _send_queue[0];
+			_send_queue.remove_at(0);
+
+			_http_client = HTTPClient::create();
+			Ref<TLSOptions> tls;
+			if (_active_request.use_ssl) {
+				tls = TLSOptions::client();
+			}
+			Error err = _http_client->connect_to_host(
+				_active_request.host, _active_request.port, tls);
+			if (err != OK) {
+				_http_client.unref();
+				return;
+			}
+			_send_state = SEND_CONNECTING;
+		} break;
+
+		case SEND_CONNECTING: {
+			_http_client->poll();
+			HTTPClient::Status s = _http_client->get_status();
+			if (s == HTTPClient::STATUS_CONNECTED) {
+				_send_state = SEND_REQUESTING;
+			} else if (s != HTTPClient::STATUS_CONNECTING && s != HTTPClient::STATUS_RESOLVING) {
+				ERR_PRINT("OTel: connect failed host=" + _active_request.host + " status=" + itos(s));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			}
+		} break;
+
+		case SEND_REQUESTING: {
+			CharString body = _active_request.json_body.utf8();
+			Error err = _http_client->request(HTTPClient::METHOD_POST,
+				_active_request.endpoint,
+				_active_request.headers_vec,
+				(const uint8_t *)body.get_data(), body.length());
+			if (err != OK) {
+				ERR_PRINT("OTel: request() error=" + itos(err));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			} else {
+				_send_state = SEND_READING;
+			}
+		} break;
+
+		case SEND_READING: {
+			_http_client->poll();
+			HTTPClient::Status s = _http_client->get_status();
+			if (s == HTTPClient::STATUS_BODY || s == HTTPClient::STATUS_CONNECTED) {
+				int code = _http_client->get_response_code();
+				if (code < 200 || code >= 300) {
+					ERR_PRINT("OTel: HTTP " + itos(code) + " from " + _active_request.host);
+				}
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			} else if (s == HTTPClient::STATUS_DISCONNECTED || s == HTTPClient::STATUS_CONNECTION_ERROR) {
+				ERR_PRINT("OTel: response error status=" + itos(s));
+				_http_client.unref();
+				_send_state = SEND_IDLE;
+			}
+		} break;
+	}
 }
 
 void OpenTelemetry::_flush_wal_signal(const String &p_signal, const String &p_endpoint) {

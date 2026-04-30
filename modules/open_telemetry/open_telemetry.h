@@ -40,12 +40,15 @@
 #include "core/templates/cowdata.h"
 #include "core/templates/vector.h"
 #include "core/variant/variant.h"
+#include "scene/main/node.h"
 
 // New structure classes
 #include "otel_document.h"
 #include "otel_state.h"
 #include "otel_wal.h"
 #include "structures/otel_span.h"
+
+class OpenTelemetryLogger;  // forward declaration
 
 enum SpanKind {
 	SPAN_KIND_UNSPECIFIED = 0,
@@ -103,8 +106,8 @@ protected:
 	static void _bind_methods();
 };
 
-class OpenTelemetry : public Object {
-	GDCLASS(OpenTelemetry, Object);
+class OpenTelemetry : public Node {
+	GDCLASS(OpenTelemetry, Node);
 
 private:
 	// New structure-based state
@@ -130,8 +133,28 @@ private:
 	// JSONL WAL — persists telemetry before HTTP export; retried on next flush
 	OTelWAL _wal;
 
-	// HTTP client for OTLP export
-	Ref<HTTPClient> http_client;
+	// Engine logger hook — forwards print/warn/error to OTel log records
+	OpenTelemetryLogger *_otel_logger = nullptr;
+
+	// Non-blocking send: queue + state machine driven by poll()
+	struct PendingRequest {
+		String host;
+		int    port;
+		bool   use_ssl;
+		String endpoint;
+		String json_body;
+		Vector<String> headers_vec;
+	};
+	Vector<PendingRequest> _send_queue;
+
+	enum SendState { SEND_IDLE, SEND_CONNECTING, SEND_REQUESTING, SEND_READING };
+	SendState _send_state = SEND_IDLE;
+	Ref<HTTPClient> _http_client;
+	PendingRequest  _active_request;
+
+	// Parse URL string → fill PendingRequest fields and push to queue.
+	void _enqueue_from_url(const String &p_url, const Dictionary &p_sink_headers,
+		const String &p_endpoint, const String &p_json_body);
 
 protected:
 	static void _bind_methods();
@@ -158,8 +181,12 @@ public:
 	void log_message(String p_level, Variant p_body, Dictionary p_attributes);
 	void flush_all();
 	void drain_wal();
+
 	void record_crash(String p_message, Dictionary p_attributes = Dictionary());
 	String shutdown();
+
+protected:
+	void _notification(int p_what);
 
 	// Metrics API
 	String create_counter(String p_name, String p_unit = "", String p_description = "");
@@ -175,6 +202,9 @@ public:
 	String set_sink_enabled(String p_sink_name, bool p_enabled);
 	Dictionary get_sink(String p_sink_name);
 	Array list_sinks();
+
+private:
+	void _advance_send_queue();
 
 	// Direct access to new classes (for advanced usage)
 	Ref<OTelState> get_state() const { return state; }

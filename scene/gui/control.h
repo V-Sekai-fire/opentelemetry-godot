@@ -683,6 +683,7 @@ public:
 
 	virtual void gui_input(const Ref<InputEvent> &p_event);
 	void accept_event();
+	void call_gui_input(const Ref<InputEvent> &p_event);
 
 	virtual bool has_point(const Point2 &p_point) const;
 
@@ -710,7 +711,6 @@ public:
 	virtual void drop_data(const Point2 &p_point, const Variant &p_data);
 	void set_drag_preview(Control *p_control);
 	void force_drag(const Variant &p_data, Control *p_control);
-	void call_gui_input(const Ref<InputEvent> &p_event);
 	void accessibility_drag();
 	void accessibility_drop();
 	bool is_drag_successful() const;

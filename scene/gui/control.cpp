@@ -2536,15 +2536,23 @@ void Control::gui_input(const Ref<InputEvent> &p_event) {
 }
 
 void Control::call_gui_input(const Ref<InputEvent> &p_event) {
-	ERR_FAIL_COND(!is_inside_tree());
-	// Isolate this direct call from the viewport's global is_input_handled() state.
-	// Without isolation, a prior accepted event would skip the virtual method here,
-	// and consecutive calls would silently no-op after the first accepted one.
+	ERR_FAIL_COND(p_event.is_null());
+	if (!is_inside_tree()) {
+		return;
+	}
+
 	Viewport *vp = get_viewport();
-	bool prior_handled = vp->local_input_handled;
-	vp->local_input_handled = false;
+	bool was_handled = vp ? vp->is_input_handled() : false;
+
+	if (vp) {
+		vp->set_input_handled(false);
+	}
+
 	_call_gui_input(p_event);
-	vp->local_input_handled = vp->local_input_handled || prior_handled;
+
+	if (vp) {
+		vp->set_input_handled(was_handled);
+	}
 }
 
 void Control::accept_event() {
